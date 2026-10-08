@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>多人立方体</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #111; }
+    #info {
+      position: fixed; top: 10px; left: 10px; color: #fff;
+      font-family: monospace; font-size: 14px; z-index: 10;
+      background: rgba(0,0,0,0.5); padding: 8px 12px; border-radius: 6px;
+      pointer-events: none;
+    }
+    #name-tag {
+      position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+      color: #fff; font-family: monospace; font-size: 16px; z-index: 10;
+      background: rgba(0,0,0,0.6); padding: 6px 16px; border-radius: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div id="info">WASD 移动 / 方向键旋转</div>
+  <div id="name-tag">连接中...</div>
+
+  <script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+
+  <script>
+    // ============ 1. 生成随机身份 ============
+    function randomName() {
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+      const len = 3 + Math.floor(Math.random() * 3); // 3~5 位
+      let s = '';
+      for (let i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)];
+      return s;
+    }
+    function randomColor() {
+      return new THREE.Color(Math.random(), Math.random(), Math.random());
+    }
+
+    const myName = randomName();
+    const myColor = randomColor();
+    document.getElementById('name-tag').textContent = '你是: ' + myName;
+
+    // ============ 2. Three.js 场景 ============
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x111122);
+    scene.fog = new THREE.Fog(0x111122, 50, 150);
+
+    const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 1000);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(devicePixelRatio);
+    document.body.appendChild(renderer.domElement);
+
+    // 灯光
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+    dirLight.position.set(30, 50, 20);
+    scene.add(dirLight);
+
+    // 100x100 棋盘地面
+    const boardSize = 100;
+    const grid = new THREE.GridHelper(boardSize, boardSize, 0x444466, 0x222244);
+    scene.add(grid);
+
+    // ============ 3. 创建自己的立方体 ============
+    const cubeGeo = new THREE.BoxGeometry(2, 2, 2);
+    const myMat = new THREE.MeshStandardMaterial({ color: myColor });
+    const myCube = new THREE.Mesh(cubeGeo, myMat);
+    myCube.position.set(
+      (Math.random() - 0.5) * boardSize,
+      1,
+      (Math.random() - 0.5) * boardSize
+    );
+    scene.add(myCube);
+
+    // 名字标签（用 Sprite 显示在立方体上方）
+    function makeLabel(text, color) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 256;
+      canvas.height = 64;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = 'rgba(0,0,0,0)';
+      ctx.fillRect(0, 0, 256, 64);
+      ctx.font = 'bold 40px monospace';
+      ctx.fillStyle = '#' + color.getHexString();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text, 128, 32);
+      const tex = new THREE.CanvasTexture(canvas);
+      const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+      const sprite = new THREE.Sprite(mat);
+      sprite.scale.set(6, 1.5, 1);
+      return sprite;
+    }
+    myCube.add(makeLabel(myName, myColor).translateY(2.5));
+
+    // ============ 4. 键盘控制 ============
+    const keys = {};
+    addEventListener('keydown', e => keys[e.key.toLowerCase()] = true);
+    addEventListener('keyup',   e => keys[e.key.toLowerCase()] = false);
+
+    const moveSpeed = 0.3;
+    const rotSpeed = 0.04;
+
+    function updateMyCube() {
+      // 前后移动（沿着立方体朝向）
+      if (keys['w'] || keys['arrowup']) {
+        myCube.position.x += Math.sin(myCube.rotation.y) * moveSpeed;
+        myCube.position.z += Math.cos(myCube.rotation.y) * moveSpeed;
+      }
+      if (keys['s'] || keys['arrowdown']) {
+        myCube.position.x -= Math.sin(myCube.rotation.y) * moveSpeed;
+        myCube.position.z -= Math.cos(myCube.rotation.y) * moveSpeed;
+      }
+      // 左右旋转
+      if (keys['a'] || keys['arrowleft'])  myCube.rotation.y += rotSpeed;
+      if (keys['d'] || keys['arrowright']) myCube.rotation.y -= rotSpeed;
+
+      // 限制在棋盘范围内
+      const half = boardSize / 2;
+      myCube.position.x = Math.max(-half, Math.min(half, myCube.position.x));
+      myCube.position.z = Math.max(-half, Math.min(half, myCube.position.z));
+    }
+
+    // 相机跟随自己（第三人称，稍微靠后上方）
+    function updateCamera() {
+      const offset = new THREE.Vector3(0, 8, -14);
+      offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), myCube.rotation.y);
+      const targetPos = myCube.position.clone().add(offset);
+      camera.position.lerp(targetPos, 0.1);
+      camera.lookAt(myCube.position);
+    }
+
+    // ============ 5. MQTT 连接 ============
+    const client = mqtt.connect('wss://broker.emqx.io:8084/mqtt');
+    const TOPIC = 'mygame/cubes/' + Math.random().toString(36).slice(2, 8); // 每次开房随机
+    // 为了让所有人进同一个房间，把上面这行改成固定字符串，比如：
+    // const TOPIC = 'mygame/cubes/room1';
+
+    const remoteCubes = {}; // name -> { mesh, lastSeen }
+
+    client.on('connect', () => {
+      console.log('MQTT 已连接');
+      client.subscribe(TOPIC);
+      // 定期广播自己的位置
+      setInterval(broadcastMyState, 100);
+    });
+
+    function broadcastMyState() {
+      const msg = {
+        name: myName,
+        color: myColor.getHex(),
+        x: myCube.position.x,
+        z: myCube.position.z,
+        ry: myCube.rotation.y
+      };
+      client.publish(TOPIC, JSON.stringify(msg));
+    }
+
+    client.on('message', (topic, payload) => {
+      let data;
+      try { data = JSON.parse(payload.toString()); } catch (e) { return; }
+      if (data.name === myName) return; // 忽略自己
+
+      if (!remoteCubes[data.name]) {
+        // 新玩家加入，创建他的立方体
+        const color = new THREE.Color(data.color);
+        const mat = new THREE.MeshStandardMaterial({ color });
+        const mesh = new THREE.Mesh(cubeGeo, mat);
+        mesh.add(makeLabel(data.name, color).translateY(2.5));
+        scene.add(mesh);
+        remoteCubes[data.name] = { mesh, lastSeen: Date.now() };
+        console.log('新玩家:', data.name);
+      }
+
+      const rc = remoteCubes[data.name];
+      rc.mesh.position.set(data.x, 1, data.z);
+      rc.mesh.rotation.y = data.ry;
+      rc.lastSeen = Date.now();
+    });
+
+    // 定期清理掉线玩家（超过 3 秒没广播）
+    setInterval(() => {
+      const now = Date.now();
+      for (const name in remoteCubes) {
+        if (now - remoteCubes[name].lastSeen > 3000) {
+          scene.remove(remoteCubes[name].mesh);
+          delete remoteCubes[name];
+          console.log('玩家离开:', name);
+        }
+      }
+    }, 1000);
+
+    // ============ 6. 主循环 ============
+    function animate() {
+      requestAnimationFrame(animate);
+      updateMyCube();
+      updateCamera();
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+  </script>
+</body>
+</html>
